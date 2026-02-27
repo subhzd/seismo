@@ -1,0 +1,1315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SEISMO - Live Earthquake Globe</title>
+    
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS -->
+    <script src="cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            dark: '#020617',
+                            panel: 'rgba(15, 23, 42, 0.75)',
+                            border: 'rgba(51, 65, 85, 0.5)',
+                            accent: '#38bdf8',
+                            danger: '#ef4444',
+                            warning: '#f59e0b'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Dependencies -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #020617; color: #e2e8f0; }
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 0; }
+        
+        /* UI Layer overrides */
+        #ui-layer { position: absolute; inset: 0; z-index: 10; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; padding: 1rem; padding-bottom: 2.5rem; }
+        @media (min-width: 768px) { #ui-layer { padding: 1.5rem; padding-bottom: 3rem; } }
+        .pointer-events-auto { pointer-events: auto; }
+        
+        /* Glassmorphism Panels */
+        .glass-panel {
+            background: var(--tw-colors-brand-panel);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--tw-colors-brand-border);
+            border-radius: 0.75rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 4px; }
+        @media (min-width: 768px) { ::-webkit-scrollbar { width: 6px; } }
+        ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.5); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: rgba(51, 65, 85, 0.8); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(71, 85, 105, 1); }
+
+        /* Range Slider */
+        input[type=range] {
+            -webkit-appearance: none; width: 100%; background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%;
+            background: #38bdf8; cursor: pointer; margin-top: -6px; box-shadow: 0 0 10px rgba(56,189,248,0.5);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%; height: 4px; cursor: pointer; background: rgba(51, 65, 85, 0.8); border-radius: 2px;
+        }
+
+        /* Tooltip */
+        #tooltip {
+            position: absolute; opacity: 0; transition: opacity 0.2s, transform 0.1s;
+            pointer-events: none; z-index: 50; transform: translate(-50%, -120%);
+        }
+
+        /* Loading Overlay */
+        #loader {
+            position: absolute; inset: 0; z-index: 100; background: #020617;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            transition: opacity 1s ease-out;
+        }
+        .spinner {
+            width: 50px; height: 50px; border: 3px solid rgba(56,189,248,0.2);
+            border-top-color: #38bdf8; border-radius: 50%; animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        /* Chart Bars Animation */
+        .chart-bar { transition: height 0.5s ease-out, background-color 0.3s; }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loader">
+        <div class="spinner mb-6"></div>
+        <div class="flex items-center gap-3 mb-2">
+            <img src="seismo.png" alt="Seismo" class="w-8 h-8 md:w-10 md:h-10 object-contain" onerror="this.style.display='none'">
+            <h1 class="font-mono text-xl md:text-2xl tracking-widest text-brand-accent">SEISMO</h1>
+        </div>
+        <p class="font-mono text-[10px] md:text-xs text-slate-500" id="loader-text">INITIALIZING TELEMETRY...</p>
+    </div>
+
+    <!-- WebGL Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- Interactive Tooltip -->
+    <div id="tooltip" class="glass-panel p-3 min-w-[150px] md:min-w-[200px]">
+        <div class="flex justify-between items-center mb-1">
+            <span class="font-mono font-bold text-base md:text-lg" id="tt-mag">M 0.0</span>
+            <span class="font-mono text-[10px] md:text-xs text-slate-400" id="tt-depth">0 km</span>
+        </div>
+        <div class="font-sans text-xs md:text-sm text-slate-200 truncate" id="tt-place">Location Name</div>
+        <div class="font-mono text-[10px] md:text-xs text-brand-accent mt-2" id="tt-time">00:00:00 UTC</div>
+    </div>
+
+    <!-- UI Overlay -->
+    <div id="ui-layer">
+        
+        <!-- Top Section: Header & Status -->
+        <div class="flex flex-col md:flex-row justify-between items-start pointer-events-none gap-2">
+            <div class="glass-panel p-3 md:p-4 pointer-events-auto w-full md:w-auto flex justify-between md:block items-center">
+                <h1 class="font-mono text-base md:text-xl font-bold tracking-wider text-slate-100 flex items-center gap-2 md:gap-3">
+                    <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0"></span>
+                    <img src="seismo.png" alt="Icon" class="w-5 h-5 md:w-6 md:h-6 object-contain" onerror="this.style.display='none'">
+                    SEISMO
+                </h1>
+                <p class="font-sans text-[9px] md:text-xs text-slate-400 md:mt-1 uppercase tracking-widest hidden md:block">Global Telemetry Array</p>
+            </div>
+            
+            <div class="glass-panel p-2 md:p-3 flex items-center justify-between md:justify-end gap-3 md:gap-4 pointer-events-auto w-full md:w-auto">
+                <div class="text-left md:text-right">
+                    <div class="font-mono text-[9px] md:text-[10px] text-slate-400">SYS. STATUS</div>
+                    <div class="font-mono text-xs md:text-sm text-green-400" id="sys-status">ONLINE</div>
+                </div>
+                <div class="h-6 md:h-8 w-px bg-brand-border"></div>
+                <div class="text-right">
+                    <div class="font-mono text-[9px] md:text-[10px] text-slate-400">DATA FEED</div>
+                    <select id="feed-select" class="bg-transparent font-mono text-xs md:text-sm text-brand-accent outline-none cursor-pointer">
+                        <option value="all_day">LAST 24 HOURS</option>
+                        <option value="all_week">LAST 7 DAYS</option>
+                        <option value="all_hour">LAST HOUR</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- Middle Section: Left Dashboard & Right List -->
+        <div class="flex flex-col md:flex-row justify-between items-stretch flex-1 my-2 md:my-4 overflow-y-auto pointer-events-none gap-4 pb-2 md:pb-0">
+            
+            <!-- Left: Executive Dashboard -->
+            <div class="w-full md:w-80 flex flex-col gap-2 md:gap-3 pointer-events-auto flex-shrink-0 self-start md:sticky md:top-0 z-20">
+                <!-- Global Metrics -->
+                <div class="glass-panel p-3 md:p-4 flex-shrink-0">
+                    <h2 class="font-mono text-[10px] md:text-xs text-slate-500 mb-2 tracking-widest border-b border-brand-border pb-1">GLOBAL METRICS</h2>
+                    <div class="grid grid-cols-3 gap-2">
+                        <div>
+                            <div class="font-mono text-[9px] md:text-[10px] text-slate-400">EVENTS</div>
+                            <div class="font-mono text-lg md:text-xl text-slate-100" id="metric-total">0</div>
+                        </div>
+                        <div>
+                            <div class="font-mono text-[9px] md:text-[10px] text-slate-400">MAX MAG</div>
+                            <div class="font-mono text-lg md:text-xl text-brand-danger" id="metric-max">0.0</div>
+                        </div>
+                        <div>
+                            <div class="font-mono text-[9px] md:text-[10px] text-slate-400" title="Seismic Volatility Index">VOLATILITY</div>
+                            <div class="font-mono text-lg md:text-xl text-brand-warning flex items-baseline gap-1">
+                                <span id="metric-svi">0.0</span><span class="text-[9px] text-slate-500">/100</span>
+                            </div>
+                        </div>
+                        <div class="col-span-3 mt-1">
+                            <div class="font-mono text-[9px] md:text-[10px] text-slate-400 mb-0.5">TOTAL EST. ENERGY RELEASED</div>
+                            <div class="font-mono text-xs md:text-sm text-brand-accent" id="metric-energy">0.00 TJ</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Energy Distribution Chart -->
+                <div class="glass-panel p-3 md:p-4 flex-shrink-0">
+                    <h2 class="font-mono text-[10px] md:text-xs text-slate-500 mb-2 tracking-widest border-b border-brand-border pb-1">ENERGY DISTRIBUTION</h2>
+                    <div id="energy-chart" class="flex items-end gap-[2px] h-8 md:h-10 mt-2 w-full">
+                        <!-- Bars injected via JS -->
+                    </div>
+                    <div class="flex justify-between font-mono text-[8px] text-slate-500 mt-1">
+                        <span id="chart-start">OLD</span>
+                        <span>NOW</span>
+                    </div>
+                </div>
+
+                <!-- Selected Target Details -->
+                <div class="glass-panel p-3 md:p-4 flex-shrink-0 md:flex-1 flex flex-col opacity-50 transition-opacity duration-300 min-h-[130px]" id="target-panel">
+                    <h2 class="font-mono text-[10px] md:text-xs text-slate-500 mb-2 md:mb-3 tracking-widest border-b border-brand-border pb-1">TARGET TELEMETRY</h2>
+                    <div class="flex-1 flex flex-col justify-center text-center" id="target-placeholder">
+                        <div class="font-mono text-[10px] md:text-xs text-slate-500">AWAITING TARGET LOCK...</div>
+                        <div class="font-sans text-[9px] md:text-[10px] text-slate-600 mt-1 hidden md:block">Click any node on the globe to acquire data.</div>
+                    </div>
+                    
+                    <div id="target-data" class="hidden flex-col gap-2 md:gap-3">
+                        <div class="flex items-end justify-between">
+                            <div>
+                                <div class="font-mono text-[9px] md:text-[10px] text-slate-400">MAGNITUDE</div>
+                                <div class="font-mono text-2xl md:text-3xl font-bold" id="td-mag">0.0</div>
+                            </div>
+                            <div class="text-right">
+                                <div class="font-mono text-[9px] md:text-[10px] text-slate-400">DEPTH</div>
+                                <div class="font-mono text-base md:text-lg" id="td-depth">0 km</div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="font-mono text-[9px] md:text-[10px] text-slate-400 mb-0.5">LOCATION</div>
+                            <div class="font-sans text-[10px] md:text-xs text-slate-200 leading-tight" id="td-place">--</div>
+                        </div>
+                        <div class="bg-brand-accent/10 border border-brand-accent/20 p-1.5 md:p-2 rounded">
+                            <div class="font-mono text-[8px] md:text-[9px] text-brand-accent/70">KINETIC YIELD ESTIMATE</div>
+                            <div class="font-mono text-[10px] md:text-xs text-brand-accent mt-0.5" id="td-energy">0.00 Joules</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mobile Spacer: Allows touching the 3D canvas on mobile devices between stacked panels -->
+            <div class="md:hidden w-full min-h-[35vh] pointer-events-none flex-shrink-0"></div>
+
+            <!-- Globe View Controls (Zoom/Reset) -->
+            <div class="absolute right-4 md:right-6 bottom-24 md:bottom-28 z-[60] flex flex-col gap-2 pointer-events-auto">
+                <button onclick="window.engine.zoom(1)" class="glass-panel w-8 h-8 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-colors font-mono text-lg leading-none shadow-lg" title="Zoom In">+</button>
+                <button onclick="window.engine.zoom(-1)" class="glass-panel w-8 h-8 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-colors font-mono text-lg leading-none shadow-lg" title="Zoom Out">-</button>
+                <button onclick="window.engine.resetGlobe()" class="glass-panel w-8 h-8 flex items-center justify-center text-slate-300 hover:text-brand-accent hover:bg-slate-700 transition-colors font-mono text-lg shadow-lg pb-1" title="Reset Globe">↺</button>
+            </div>
+
+            <!-- Right: Event Log & Ranking -->
+            <div class="w-full md:w-80 flex flex-col gap-3 md:gap-4 flex-shrink-0 pointer-events-none">
+                
+                <!-- Intensity Ranking -->
+                <div class="glass-panel p-4 flex-shrink-0 pointer-events-auto">
+                    <h2 class="font-mono text-[10px] md:text-xs text-slate-500 mb-3 tracking-widest border-b border-brand-border pb-2">INTENSITY BY REGION</h2>
+                    <div id="country-ranking" class="flex flex-col gap-2">
+                        <!-- Populated by JS -->
+                        <div class="font-mono text-[10px] text-slate-600 text-center py-2">CALCULATING...</div>
+                    </div>
+                </div>
+
+                <!-- Event List -->
+                <div class="glass-panel flex flex-col pointer-events-auto flex-1 max-h-[40vh] md:max-h-none h-[300px] md:h-auto">
+                    <div class="p-3 md:p-4 border-b border-brand-border flex justify-between items-center flex-shrink-0">
+                        <h2 class="font-mono text-[10px] md:text-xs text-slate-500 tracking-widest">RECENT DETECTIONS</h2>
+                        <span class="flex h-2 w-2 relative">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-accent opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2 bg-brand-accent"></span>
+                        </span>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-2" id="event-list">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Section: Controls & Timeline -->
+        <div class="glass-panel p-3 md:p-4 pointer-events-auto flex flex-col gap-3 md:gap-4 flex-shrink-0">
+            
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 md:gap-8">
+                <!-- Toggles -->
+                <div class="flex flex-wrap gap-3 md:gap-4">
+                    <label class="flex items-center gap-2 cursor-pointer group">
+                        <input type="checkbox" id="toggle-plates" class="hidden">
+                        <div class="w-7 md:w-8 h-3.5 md:h-4 bg-slate-800 rounded-full relative transition-colors duration-300 group-hover:bg-slate-700" id="toggle-bg-plates">
+                            <div class="w-3 md:w-4 h-3 md:h-4 bg-slate-400 rounded-full absolute left-0 transition-transform duration-300 scale-75 md:scale-75" id="toggle-knob-plates"></div>
+                        </div>
+                        <span class="font-mono text-[9px] md:text-[10px] text-slate-400 uppercase">Tectonic</span>
+                    </label>
+                    
+                    <label class="flex items-center gap-2 cursor-pointer group">
+                        <input type="checkbox" id="toggle-heatmap" class="hidden">
+                        <div class="w-7 md:w-8 h-3.5 md:h-4 bg-slate-800 rounded-full relative transition-colors duration-300 group-hover:bg-slate-700" id="toggle-bg-heat">
+                            <div class="w-3 md:w-4 h-3 md:h-4 bg-slate-400 rounded-full absolute left-0 transition-transform duration-300 scale-75 md:scale-75" id="toggle-knob-heat"></div>
+                        </div>
+                        <span class="font-mono text-[9px] md:text-[10px] text-slate-400 uppercase">Heatmap</span>
+                    </label>
+
+                    <label class="flex items-center gap-2 cursor-pointer group">
+                        <input type="checkbox" id="toggle-autorotate" class="hidden" checked>
+                        <div class="w-7 md:w-8 h-3.5 md:h-4 bg-brand-accent/20 rounded-full relative transition-colors duration-300" id="toggle-bg-rot">
+                            <div class="w-3 md:w-4 h-3 md:h-4 bg-brand-accent rounded-full absolute left-0 translate-x-3.5 md:translate-x-4 transition-transform duration-300 scale-75 md:scale-75" id="toggle-knob-rot"></div>
+                        </div>
+                        <span class="font-mono text-[9px] md:text-[10px] text-brand-accent uppercase">Orbit</span>
+                    </label>
+                </div>
+
+                <!-- Legend -->
+                <div class="flex items-center gap-3 md:gap-4 md:border-l md:border-brand-border md:pl-8 w-full md:w-auto">
+                    <div class="font-mono text-[9px] md:text-[10px] text-slate-500">DEPTH:</div>
+                    <div class="flex items-center gap-2 flex-1 md:flex-none">
+                        <span class="font-mono text-[8px] md:text-[9px] text-slate-400">0km</span>
+                        <div class="flex-1 md:w-24 h-1.5 md:h-2 rounded bg-gradient-to-r from-red-500 via-yellow-500 to-blue-600"></div>
+                        <span class="font-mono text-[8px] md:text-[9px] text-slate-400">700km+</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Timeline Scrubber -->
+            <div class="flex flex-col gap-1 w-full border-t border-brand-border pt-3 md:pt-4">
+                <div class="flex justify-between items-end mb-1">
+                    <span class="font-mono text-[9px] md:text-[10px] text-slate-400">TIMELINE REPLAY (UTC)</span>
+                    <span class="font-mono text-[10px] md:text-xs text-brand-accent" id="timeline-display">LIVE</span>
+                </div>
+                <input type="range" id="timeline" min="0" max="1000" value="1000">
+                <div class="flex justify-between font-mono text-[8px] md:text-[9px] text-slate-600 mt-1">
+                    <span id="time-start">-24H</span>
+                    <span>CURRENT</span>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Thin Sticky Footer -->
+    <footer class="fixed bottom-0 left-0 w-full px-4 py-1.5 bg-brand-dark/90 backdrop-blur-md border-t border-brand-border text-[9px] md:text-[10px] text-slate-500 font-mono z-[100] flex justify-between items-center pointer-events-auto">
+        <div>&copy; 2026 @amsubhzd</div>
+        <div>Designed by <a href="https://www.aimaverick.me" target="_blank" rel="noopener noreferrer" class="text-brand-accent hover:text-white transition-colors">AIMaverick</a></div>
+    </footer>
+
+<script>
+/**
+ * CORE CONFIGURATION & UTILITIES
+ */
+const CONFIG = {
+    EARTH_RADIUS: 100,
+    API_BASE: 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/',
+    FETCH_INTERVAL_MS: 60000, // 60 seconds
+    MAX_RETRY: 3,
+    CHART_BINS: 30
+};
+
+const UTILS = {
+    // Converts spherical Lat/Lon to 3D Cartesian coordinates
+    latLonToVector3: (lat, lon, radius) => {
+        const phi = (90 - lat) * (Math.PI / 180);
+        const theta = (lon + 180) * (Math.PI / 180);
+        return new THREE.Vector3(
+            -(radius * Math.sin(phi) * Math.cos(theta)),
+            radius * Math.cos(phi),
+            radius * Math.sin(phi) * Math.sin(theta)
+        );
+    },
+    
+    // Gutenberg-Richter magnitude-energy conversion
+    calculateEnergy: (magnitude) => Math.pow(10, 1.5 * magnitude + 4.8),
+    
+    formatEnergy: (joules) => {
+        if (joules >= 1e15) return `${(joules / 1e15).toFixed(2)} PJ`;
+        if (joules >= 1e12) return `${(joules / 1e12).toFixed(2)} TJ`;
+        if (joules >= 1e9)  return `${(joules / 1e9).toFixed(2)} GJ`;
+        return `${(joules / 1e6).toFixed(2)} MJ`;
+    },
+
+    // Maps depth (0-700km) to a color gradient (Red -> Yellow -> Blue)
+    getDepthColor: (depth) => {
+        const d = Math.max(0, Math.min(depth, 700)) / 700;
+        // Hue mapping: 0 is Red, 0.65 is Blue.
+        const hue = d * 0.65;
+        return new THREE.Color().setHSL(hue, 1.0, 0.5);
+    },
+
+    // Calculate Sub-Solar Point for accurate Day/Night terminator lighting
+    getSubSolarPoint: (date) => {
+        const now = date || new Date();
+        const start = new Date(now.getUTCFullYear(), 0, 0);
+        const diff = now - start;
+        const oneDay = 1000 * 60 * 60 * 24;
+        const dayOfYear = Math.floor(diff / oneDay);
+        
+        // Approximate solar declination
+        const declination = -23.44 * Math.cos((360/365) * (dayOfYear + 10) * (Math.PI / 180));
+        
+        // Calculate sub-solar longitude based on UTC time
+        const utcHours = now.getUTCHours() + (now.getUTCMinutes() / 60) + (now.getUTCSeconds() / 3600);
+        let longitude = 180 - (utcHours * 15);
+        if (longitude < -180) longitude += 360;
+        
+        return { lat: declination, lon: longitude };
+    },
+
+    // Helper to extract a region/country name from USGS 'place' strings
+    extractRegion: (placeString) => {
+        if (!placeString) return 'Unknown';
+        const parts = placeString.split(',');
+        return parts.length > 1 ? parts[parts.length - 1].trim() : parts[0].trim();
+    }
+};
+
+
+/**
+ * WEBGL ENGINE MODULE
+ */
+class GlobeEngine {
+    constructor(containerId) {
+        this.container = document.getElementById(containerId);
+        this.scene = new THREE.Scene();
+        this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        
+        // Adjust default zoom for mobile vs desktop
+        const isMobile = window.innerWidth < 768;
+        this.camera.position.set(0, 150, isMobile ? 350 : 250);
+
+        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        this.container.appendChild(this.renderer.domElement);
+
+        this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+        this.controls.enableDamping = true;
+        this.controls.dampingFactor = 0.05;
+        this.controls.minDistance = 110;
+        this.controls.maxDistance = 500;
+        this.controls.autoRotate = true;
+        this.controls.autoRotateSpeed = 0.5;
+
+        // Ensure interactions on globe aren't blocked by UI
+        this.controls.domElement.style.touchAction = 'none';
+
+        this.markerGroup = new THREE.Group();
+        this.plateGroup = new THREE.Group();
+        this.scene.add(this.markerGroup);
+        this.scene.add(this.plateGroup);
+        this.plateGroup.visible = false; // Hidden by default
+
+        this.raycaster = new THREE.Raycaster();
+        this.mouse = new THREE.Vector2();
+        
+        this.animations = [];
+        this.isHeatmap = false;
+
+        this.initGlobe();
+        this.initPlates();
+        this.bindEvents();
+    }
+
+    initGlobe() {
+        const texLoader = new THREE.TextureLoader();
+        
+        // Using robust CDNs for high-res globe textures
+        const dayTex = texLoader.load('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg');
+        const nightTex = texLoader.load('https://unpkg.com/three-globe/example/img/earth-night.jpg');
+        const normalTex = texLoader.load('https://unpkg.com/three-globe/example/img/earth-topology.png');
+
+        // Custom Shader for precise, astronomically accurate day/night cycle
+        this.earthMaterial = new THREE.ShaderMaterial({
+            uniforms: {
+                dayTexture: { value: dayTex },
+                nightTexture: { value: nightTex },
+                normalMap: { value: normalTex },
+                sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+                isHeatmap: { value: 0.0 }
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                varying vec3 vNormal;
+                void main() {
+                    vUv = uv;
+                    // Transform normal to world space to align with absolute sun vector
+                    vNormal = normalize(mat3(modelMatrix) * normal);
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform sampler2D dayTexture;
+                uniform sampler2D nightTexture;
+                uniform vec3 sunDirection;
+                uniform float isHeatmap;
+                
+                varying vec2 vUv;
+                varying vec3 vNormal;
+
+                void main() {
+                    vec3 normal = normalize(vNormal);
+                    vec3 sunDir = normalize(sunDirection);
+                    
+                    // Cosine of angle between normal and sun
+                    float intensity = dot(normal, sunDir);
+                    
+                    vec4 dayColor = texture2D(dayTexture, vUv);
+                    vec4 nightColor = texture2D(nightTexture, vUv);
+                    
+                    // Smooth transition across terminator (dawn/dusk)
+                    float mixFactor = smoothstep(-0.1, 0.1, intensity);
+                    
+                    // Add subtle blue atmospheric scattering at terminator
+                    vec3 terminatorTint = vec3(0.2, 0.5, 0.8) * (1.0 - abs(intensity)) * 0.5;
+                    
+                    // Boost night emissive lights
+                    vec3 nightBoost = nightColor.rgb * 1.5;
+                    
+                    vec3 color = mix(nightBoost, dayColor.rgb, mixFactor);
+                    
+                    // Add terminator atmospheric effect
+                    if(intensity > -0.2 && intensity < 0.2) {
+                        color += terminatorTint * smoothstep(0.0, 1.0, 1.0 - abs(intensity * 5.0));
+                    }
+                    
+                    // Heatmap mode logic
+                    vec3 heatmapColor = vec3(0.02, 0.05, 0.1) + (nightColor.rgb * 0.2); // Dark background
+                    color = mix(color, heatmapColor, isHeatmap);
+
+                    gl_FragColor = vec4(color, 1.0);
+                }
+            `
+        });
+
+        const geometry = new THREE.SphereGeometry(CONFIG.EARTH_RADIUS, 64, 64);
+        this.earth = new THREE.Mesh(geometry, this.earthMaterial);
+        this.scene.add(this.earth);
+
+        // Add Atmospheric Outer Glow (Fresnel effect)
+        const atmosGeom = new THREE.SphereGeometry(CONFIG.EARTH_RADIUS * 1.02, 64, 64);
+        const atmosMat = new THREE.ShaderMaterial({
+            vertexShader: `
+                varying vec3 vNormal;
+                void main() {
+                    vNormal = normalize(normalMatrix * normal);
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vNormal;
+                uniform float isHeatmap;
+                void main() {
+                    // Calculate fresnel relative to camera view
+                    float intensity = pow(0.6 - dot(vNormal, vec3(0, 0, 1.0)), 3.0);
+                    vec3 baseColor = vec3(0.3, 0.6, 1.0);
+                    vec3 heatColor = vec3(0.1, 0.1, 0.1);
+                    gl_FragColor = vec4(mix(baseColor, heatColor, isHeatmap) * intensity, 1.0);
+                }
+            `,
+            blending: THREE.AdditiveBlending,
+            side: THREE.BackSide,
+            transparent: true,
+            uniforms: { isHeatmap: { value: 0.0 } }
+        });
+        this.atmosphere = new THREE.Mesh(atmosGeom, atmosMat);
+        this.scene.add(this.atmosphere);
+    }
+
+    initPlates() {
+        // Fetch raw tectonic plate geojson
+        fetch('https://raw.githubusercontent.com/fraxen/tectonicplates/master/GeoJSON/PB2002_boundaries.json')
+            .then(res => res.json())
+            .then(data => {
+                const lineMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.3 });
+                data.features.forEach(feature => {
+                    if(feature.geometry.type === 'LineString') {
+                        this.createPlateLine(feature.geometry.coordinates, lineMat);
+                    } else if (feature.geometry.type === 'MultiLineString') {
+                        feature.geometry.coordinates.forEach(coords => this.createPlateLine(coords, lineMat));
+                    }
+                });
+            }).catch(e => console.warn("Could not load plates data", e));
+    }
+
+    createPlateLine(coords, material) {
+        const points = [];
+        coords.forEach(coord => {
+            // GeoJSON is [lon, lat]
+            points.push(UTILS.latLonToVector3(coord[1], coord[0], CONFIG.EARTH_RADIUS + 0.5));
+        });
+        const geom = new THREE.BufferGeometry().setFromPoints(points);
+        const line = new THREE.Line(geom, material);
+        this.plateGroup.add(line);
+    }
+
+    updateSunPosition() {
+        // Real-time synchronization of solar vector
+        const subSolar = UTILS.getSubSolarPoint();
+        // Distance 500 for directional vector computation
+        const sunPos = UTILS.latLonToVector3(subSolar.lat, subSolar.lon, 500).normalize();
+        if(this.earthMaterial) {
+            this.earthMaterial.uniforms.sunDirection.value.copy(sunPos);
+        }
+    }
+
+    toggleHeatmap(active) {
+        this.isHeatmap = active;
+        const val = active ? 1.0 : 0.0;
+        this.earthMaterial.uniforms.isHeatmap.value = val;
+        this.atmosphere.material.uniforms.isHeatmap.value = val;
+        
+        // Adjust marker rendering based on mode
+        this.markerGroup.children.forEach(group => {
+            if(group.userData && group.userData.type === 'marker') {
+                group.children.forEach(mesh => {
+                    if(mesh.userData.isSpike) mesh.visible = !active;
+                    if(mesh.userData.isHeatmapGlow) mesh.visible = active;
+                });
+            }
+        });
+    }
+
+    addMarker(quakeData, isNew = false) {
+        const { id, mag, depth, lat, lon } = quakeData;
+        
+        // Remove existing if replacing (for diff updates)
+        const existing = this.markerGroup.getObjectByName(id);
+        if(existing) this.markerGroup.remove(existing);
+
+        const group = new THREE.Group();
+        group.name = id;
+        group.userData = { type: 'marker', data: quakeData };
+
+        const pos = UTILS.latLonToVector3(lat, lon, CONFIG.EARTH_RADIUS);
+        group.position.copy(pos);
+        group.lookAt(new THREE.Vector3(0,0,0)); // Point towards center
+
+        const color = UTILS.getDepthColor(depth);
+        const height = Math.max(0.1, Math.pow(1.5, mag) * 0.5); // Exponential scaling for impact
+        
+        // 1. The outward Spike (representing magnitude)
+        const spikeGeom = new THREE.CylinderGeometry(0.2, 0, height, 8);
+        spikeGeom.translate(0, -height/2, 0); // Origin at top, pointing down towards center because of lookAt
+        const spikeMat = new THREE.MeshBasicMaterial({ color: color });
+        const spike = new THREE.Mesh(spikeGeom, spikeMat);
+        spike.userData.isSpike = true;
+        spike.visible = !this.isHeatmap;
+        group.add(spike);
+
+        // 2. Inward root (representing depth)
+        const depthScale = depth / 20; // Scale depth visually
+        if(depthScale > 0.1) {
+            const rootGeom = new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 0.5 });
+            const pts = [new THREE.Vector3(0,0,0), new THREE.Vector3(0, depthScale, 0)];
+            const lineG = new THREE.BufferGeometry().setFromPoints(pts);
+            const root = new THREE.Line(lineG, rootGeom);
+            group.add(root);
+        }
+
+        // 3. Surface Bloom (Sprite) - Used heavily in heatmap mode
+        const canvas = document.createElement('canvas');
+        canvas.width = 32; canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        const grd = ctx.createRadialGradient(16,16,0, 16,16,16);
+        grd.addColorStop(0, `rgba(${color.r*255},${color.g*255},${color.b*255}, 1)`);
+        grd.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grd;
+        ctx.fillRect(0,0,32,32);
+        
+        const spriteMat = new THREE.SpriteMaterial({ 
+            map: new THREE.CanvasTexture(canvas),
+            blending: THREE.AdditiveBlending,
+            transparent: true,
+            depthTest: false
+        });
+        const glow = new THREE.Sprite(spriteMat);
+        // Base size on magnitude. In heatmap, make them larger.
+        const baseSize = Math.max(1, mag * 0.8);
+        glow.scale.set(baseSize, baseSize, 1);
+        glow.userData.isHeatmapGlow = true;
+        glow.userData.baseSize = baseSize;
+        glow.visible = this.isHeatmap;
+        
+        // Even in normal mode, shallow quakes have a slight glow
+        if(depth < 30 && !this.isHeatmap) {
+            const shallowGlow = new THREE.Sprite(spriteMat);
+            shallowGlow.scale.set(baseSize*0.5, baseSize*0.5, 1);
+            group.add(shallowGlow);
+        }
+        group.add(glow);
+
+        // 4. Animation Pulse for new events
+        if(isNew) {
+            const ringGeom = new THREE.RingGeometry(0.1, 0.2, 32);
+            const ringMat = new THREE.MeshBasicMaterial({ 
+                color: color, side: THREE.DoubleSide, transparent: true, blending: THREE.AdditiveBlending, depthTest: false
+            });
+            const ring = new THREE.Mesh(ringGeom, ringMat);
+            ring.rotation.x = Math.PI / 2; // Flat on surface
+            group.add(ring);
+            
+            this.animations.push({
+                mesh: ring,
+                scale: 1,
+                opacity: 1,
+                maxScale: 2 + mag * 2
+            });
+        }
+
+        this.markerGroup.add(group);
+    }
+
+    focusOn(lat, lon) {
+        // Temporarily disable auto-rotate to allow user inspection
+        this.controls.autoRotate = false;
+        
+        // Safely uncheck the checkbox and explicitly call updateToggles so UI matches state
+        const rotToggle = document.getElementById('toggle-autorotate');
+        if (rotToggle && rotToggle.checked) {
+            rotToggle.checked = false;
+            UIManager.updateToggles();
+        }
+
+        // Calculate target positions
+        const targetPos = UTILS.latLonToVector3(lat, lon, CONFIG.EARTH_RADIUS);
+        const zoomDist = window.innerWidth < 768 ? 2.5 : 2; // Further out on mobile
+        const camPos = UTILS.latLonToVector3(lat, lon, CONFIG.EARTH_RADIUS * zoomDist);
+
+        // Animate Camera Position
+        new TWEEN.Tween(this.camera.position)
+            .to({ x: camPos.x, y: camPos.y, z: camPos.z }, 1500)
+            .easing(TWEEN.Easing.Cubic.InOut)
+            .start();
+
+        // Animate Controls Target
+        new TWEEN.Tween(this.controls.target)
+            .to({ x: targetPos.x, y: targetPos.y, z: targetPos.z }, 1500)
+            .easing(TWEEN.Easing.Cubic.InOut)
+            .start();
+    }
+
+    zoom(direction) {
+        const targetVec = this.controls.target.clone();
+        const camVec = this.camera.position.clone();
+        const diff = camVec.sub(targetVec);
+        const scale = direction > 0 ? 0.6 : 1.4; // 1 for in, -1 for out
+        diff.multiplyScalar(scale);
+        const newPos = targetVec.add(diff);
+        
+        // clamp distance
+        const dist = newPos.distanceTo(this.controls.target);
+        if (dist < this.controls.minDistance) newPos.copy(this.controls.target).add(diff.normalize().multiplyScalar(this.controls.minDistance));
+        if (dist > this.controls.maxDistance) newPos.copy(this.controls.target).add(diff.normalize().multiplyScalar(this.controls.maxDistance));
+
+        new TWEEN.Tween(this.camera.position).to({x: newPos.x, y: newPos.y, z: newPos.z}, 400).easing(TWEEN.Easing.Quadratic.Out).start();
+    }
+
+    resetGlobe() {
+        // Restore auto-rotate based on toggle state
+        this.controls.autoRotate = document.getElementById('toggle-autorotate').checked;
+        
+        const isMobile = window.innerWidth < 768;
+        new TWEEN.Tween(this.camera.position).to({x: 0, y: 150, z: isMobile ? 350 : 250}, 1500).easing(TWEEN.Easing.Cubic.InOut).start();
+        new TWEEN.Tween(this.controls.target).to({x: 0, y: 0, z: 0}, 1500).easing(TWEEN.Easing.Cubic.InOut).start();
+        
+        // Clear the targeted telemetry UI
+        UIManager.clearTargetLock();
+    }
+
+    bindEvents() {
+        window.addEventListener('resize', () => {
+            this.camera.aspect = window.innerWidth / window.innerHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Raycasting for Tooltips & Clicks
+        const container = this.renderer.domElement;
+        
+        const updateMouse = (e) => {
+            // Support both touch and mouse events
+            const clientX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
+            const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
+            
+            this.mouse.x = (clientX / window.innerWidth) * 2 - 1;
+            this.mouse.y = -(clientY / window.innerHeight) * 2 + 1;
+            return { x: clientX, y: clientY };
+        };
+
+        const handleInteraction = (e, isClick) => {
+            const screenPos = updateMouse(e);
+            this.raycaster.setFromCamera(this.mouse, this.camera);
+            
+            const intersects = this.raycaster.intersectObjects(this.markerGroup.children, true);
+            
+            if(intersects.length > 0) {
+                let obj = intersects[0].object;
+                while(obj.parent && obj.userData.type !== 'marker') { obj = obj.parent; }
+                
+                if(obj.userData.type === 'marker') {
+                    const data = obj.userData.data;
+                    
+                    if(isClick) {
+                        this.focusOn(data.lat, data.lon);
+                        UIManager.setTargetLock(data);
+                    } else if (e.type !== 'touchmove') { // Don't show tooltip while dragging on mobile
+                        UIManager.showTooltip(screenPos.x, screenPos.y, data);
+                        document.body.style.cursor = 'crosshair';
+                    }
+                    return;
+                }
+            }
+            if(!isClick) {
+                UIManager.hideTooltip();
+                document.body.style.cursor = 'default';
+            }
+        };
+
+        container.addEventListener('mousemove', (e) => handleInteraction(e, false));
+        container.addEventListener('click', (e) => handleInteraction(e, true));
+        // Simple touch support for selection
+        container.addEventListener('touchstart', (e) => {
+            if(e.touches.length === 1) handleInteraction(e, true);
+        }, { passive: true });
+    }
+
+    render(time) {
+        TWEEN.update(time);
+        this.controls.update();
+        
+        // Update Sun sync every frame (overkill but precise)
+        this.updateSunPosition();
+
+        // Process animations (shockwaves)
+        for(let i = this.animations.length - 1; i >= 0; i--) {
+            let anim = this.animations[i];
+            anim.scale += 0.1;
+            anim.opacity -= 0.02;
+            
+            if(anim.opacity <= 0 || anim.scale >= anim.maxScale) {
+                anim.mesh.parent.remove(anim.mesh);
+                anim.mesh.geometry.dispose();
+                anim.mesh.material.dispose();
+                this.animations.splice(i, 1);
+            } else {
+                anim.mesh.scale.set(anim.scale, anim.scale, anim.scale);
+                anim.mesh.material.opacity = anim.opacity;
+            }
+        }
+
+        // Heatmap pulse effect
+        if(this.isHeatmap) {
+            const timePhase = Date.now() * 0.003;
+            this.markerGroup.children.forEach(group => {
+                group.children.forEach(mesh => {
+                    if(mesh.userData.isHeatmapGlow) {
+                        const pulse = 1 + Math.sin(timePhase + group.position.x) * 0.2;
+                        const bs = mesh.userData.baseSize;
+                        mesh.scale.set(bs * pulse, bs * pulse, 1);
+                    }
+                });
+            });
+        }
+
+        this.renderer.render(this.scene, this.camera);
+        requestAnimationFrame((t) => this.render(t));
+    }
+}
+
+
+/**
+ * DATA MANAGEMENT MODULE
+ */
+class DataManager {
+    constructor(engine) {
+        this.engine = engine;
+        this.events = new Map(); // Store by ID
+        this.currentFeed = 'all_day';
+        this.isScrubbing = false;
+        this.scrubTime = Date.now();
+        
+        this.init();
+    }
+
+    async init() {
+        await this.fetchData(true);
+        setInterval(() => {
+            if(!this.isScrubbing) this.fetchData(false);
+        }, CONFIG.FETCH_INTERVAL_MS);
+    }
+
+    setFeed(feed) {
+        this.currentFeed = feed;
+        this.events.clear();
+        // Clear existing markers
+        while(this.engine.markerGroup.children.length > 0) {
+            const obj = this.engine.markerGroup.children[0];
+            this.engine.markerGroup.remove(obj);
+        }
+        UIManager.showSystemStatus("SWITCHING FEED...", "warning");
+        this.fetchData(true);
+    }
+
+    async fetchData(isInitial = false) {
+        try {
+            const response = await fetch(`${CONFIG.API_BASE}${this.currentFeed}.geojson`);
+            if(!response.ok) throw new Error("Network response was not ok");
+            const data = await response.json();
+            
+            let newEventsCount = 0;
+            // Adaptive memory cutoff based on feed
+            let historyLimitDays = 1;
+            if(this.currentFeed === 'all_week') historyLimitDays = 7;
+            const cutoffTime = Date.now() - (historyLimitDays * 24 * 60 * 60 * 1000); 
+
+            data.features.forEach(feature => {
+                const id = feature.id;
+                const props = feature.properties;
+                const coords = feature.geometry.coordinates; // [lon, lat, depth]
+                
+                if (props.time < cutoffTime) return; // Ignore very old data
+
+                if (!this.events.has(id)) {
+                    const quakeData = {
+                        id: id,
+                        mag: props.mag,
+                        place: props.place,
+                        time: props.time,
+                        depth: coords[2],
+                        lat: coords[1],
+                        lon: coords[0]
+                    };
+                    
+                    this.events.set(id, quakeData);
+                    this.engine.addMarker(quakeData, !isInitial); // Animate if not initial load
+                    newEventsCount++;
+                }
+            });
+
+            this.updateAggregates();
+            if(isInitial) UIManager.hideLoader();
+            UIManager.showSystemStatus("ONLINE / SYNCED", "success");
+
+        } catch (error) {
+            console.error("Fetch Error:", error);
+            UIManager.showSystemStatus("CONNECTION LOST", "error");
+        }
+    }
+
+    updateAggregates() {
+        const sorted = Array.from(this.events.values()).sort((a, b) => b.time - a.time);
+        
+        let totalEnergy = 0;
+        let maxMag = 0;
+        const countryStats = {};
+        
+        // Window duration logic for chart & SVI
+        let windowMs = 24 * 60 * 60 * 1000; 
+        if(this.currentFeed === 'all_week') windowMs = 7 * 24 * 60 * 60 * 1000;
+        if(this.currentFeed === 'all_hour') windowMs = 60 * 60 * 1000;
+        const startTime = Date.now() - windowMs;
+
+        const bins = new Array(CONFIG.CHART_BINS).fill(0);
+
+        sorted.forEach(q => {
+            // Base aggregations
+            if(q.mag > maxMag) maxMag = q.mag;
+            const energy = UTILS.calculateEnergy(q.mag);
+            totalEnergy += energy;
+
+            // Country/Region Intensity Parsing
+            const region = UTILS.extractRegion(q.place);
+            if(!countryStats[region]) {
+                countryStats[region] = { energy: 0, maxMag: -99, count: 0, topQuake: null };
+            }
+            countryStats[region].energy += energy;
+            countryStats[region].count += 1;
+            
+            // Track the strongest earthquake in this region for interactivity focus
+            if(q.mag > countryStats[region].maxMag) {
+                countryStats[region].maxMag = q.mag;
+                countryStats[region].topQuake = q;
+            }
+
+            // Chart Binning
+            if(q.time >= startTime) {
+                const binIdx = Math.floor(((q.time - startTime) / windowMs) * CONFIG.CHART_BINS);
+                if(binIdx >= 0 && binIdx < CONFIG.CHART_BINS) {
+                    bins[binIdx] += energy;
+                }
+            }
+        });
+
+        // Calculate Seismic Volatility Index (0-100 scale)
+        // Weighted by maximum magnitude experienced + rate of events relative to window
+        const hourlyRate = sorted.length / (windowMs / (60 * 60 * 1000));
+        let sviRaw = (maxMag * 10) + (hourlyRate * 1.5);
+        const svi = Math.min(100, Math.max(0, sviRaw));
+
+        // Sort Top Volatile Countries
+        const topCountries = Object.entries(countryStats)
+            .sort((a, b) => b[1].energy - a[1].energy)
+            .slice(0, 5)
+            .map(entry => ({ name: entry[0], stats: entry[1] }));
+
+        UIManager.updateMetrics({
+            total: this.events.size,
+            maxMag: maxMag.toFixed(1),
+            energy: UTILS.formatEnergy(totalEnergy),
+            svi: svi.toFixed(1)
+        });
+
+        UIManager.updateChart(bins, this.currentFeed);
+        UIManager.updateCountryRankings(topCountries);
+        UIManager.updateList(sorted.slice(0, 50)); // Show top 50 recent
+    }
+
+    applyTimeFilter(timestamp) {
+        this.scrubTime = timestamp;
+        let windowMs = 24 * 60 * 60 * 1000; 
+        if(this.currentFeed === 'all_week') windowMs = 7 * 24 * 60 * 60 * 1000;
+        if(this.currentFeed === 'all_hour') windowMs = 60 * 60 * 1000;
+
+        const rangeStart = timestamp - windowMs;
+
+        this.engine.markerGroup.children.forEach(markerObj => {
+            const data = markerObj.userData.data;
+            if(data.time <= timestamp && data.time >= rangeStart) {
+                markerObj.visible = true;
+            } else {
+                markerObj.visible = false;
+            }
+        });
+    }
+}
+
+
+/**
+ * DOM UI MANAGER
+ */
+const UIManager = {
+    init() {
+        // Setup Toggles
+        const c_plates = document.getElementById('toggle-plates');
+        const c_heat = document.getElementById('toggle-heatmap');
+        const c_rot = document.getElementById('toggle-autorotate');
+
+        const bindToggle = (checkboxId, bgId, knobId, activeBgClass, activeKnobClass) => {
+            document.getElementById(checkboxId).addEventListener('change', (e) => {
+                const bg = document.getElementById(bgId);
+                const knob = document.getElementById(knobId);
+                if(e.target.checked) {
+                    bg.classList.replace('bg-slate-800', activeBgClass);
+                    bg.classList.remove('group-hover:bg-slate-700');
+                    knob.classList.add(activeKnobClass);
+                } else {
+                    bg.classList.replace(activeBgClass, 'bg-slate-800');
+                    bg.classList.add('group-hover:bg-slate-700');
+                    knob.classList.remove(activeKnobClass);
+                }
+                // Call updateToggles to actually apply the ThreeJS visual changes!
+                UIManager.updateToggles();
+            });
+        };
+
+        const txVal = window.innerWidth < 768 ? 'translate-x-3.5' : 'translate-x-4';
+        bindToggle('toggle-plates', 'toggle-bg-plates', 'toggle-knob-plates', 'bg-brand-accent/20', txVal);
+        bindToggle('toggle-heatmap', 'toggle-bg-heat', 'toggle-knob-heat', 'bg-red-500/20', txVal);
+        
+        // Autorotate logic mapped specifically because it starts checked
+        c_rot.addEventListener('change', (e) => this.updateToggles());
+
+        // Timeline Slider
+        const slider = document.getElementById('timeline');
+        slider.addEventListener('input', (e) => {
+            const pct = e.target.value / 1000;
+            if(pct === 1.0) {
+                window.dataManager.isScrubbing = false;
+                document.getElementById('timeline-display').innerText = "LIVE";
+                document.getElementById('timeline-display').className = "font-mono text-[10px] md:text-xs text-green-400 font-bold animate-pulse";
+                window.dataManager.applyTimeFilter(Date.now()); // Show all
+            } else {
+                window.dataManager.isScrubbing = true;
+                let msOffset = 24 * 60 * 60 * 1000;
+                if(window.dataManager.currentFeed === 'all_week') msOffset *= 7;
+                if(window.dataManager.currentFeed === 'all_hour') msOffset /= 24;
+                
+                const simTime = Date.now() - msOffset + (msOffset * pct);
+                
+                const d = new Date(simTime);
+                document.getElementById('timeline-display').innerText = d.toISOString().replace('T', ' ').substr(0,19);
+                document.getElementById('timeline-display').className = "font-mono text-[10px] md:text-xs text-brand-warning";
+                
+                window.dataManager.applyTimeFilter(simTime);
+            }
+        });
+
+        // Feed Select
+        document.getElementById('feed-select').addEventListener('change', (e) => {
+            window.dataManager.setFeed(e.target.value);
+            const labelMap = { 'all_day': '-24H', 'all_week': '-7 DAYS', 'all_hour': '-1 HOUR' };
+            document.getElementById('time-start').innerText = labelMap[e.target.value];
+            slider.value = 1000;
+            slider.dispatchEvent(new Event('input'));
+        });
+    },
+
+    updateToggles() {
+        const c_plates = document.getElementById('toggle-plates').checked;
+        const c_heat = document.getElementById('toggle-heatmap').checked;
+        const c_rot = document.getElementById('toggle-autorotate').checked;
+
+        window.engine.plateGroup.visible = c_plates;
+        window.engine.toggleHeatmap(c_heat);
+        window.engine.controls.autoRotate = c_rot;
+
+        const bg = document.getElementById('toggle-bg-rot');
+        const knob = document.getElementById('toggle-knob-rot');
+        
+        // Explicitly overriding exact responsive classes instead of relying on `toggle` state
+        if(c_rot) {
+            bg.classList.add('bg-brand-accent/20');
+            bg.classList.remove('bg-slate-800');
+            knob.classList.add('translate-x-3.5', 'md:translate-x-4');
+        } else {
+            bg.classList.add('bg-slate-800');
+            bg.classList.remove('bg-brand-accent/20');
+            knob.classList.remove('translate-x-3.5', 'md:translate-x-4');
+        }
+    },
+
+    hideLoader() {
+        const loader = document.getElementById('loader');
+        loader.style.opacity = '0';
+        setTimeout(() => loader.style.display = 'none', 1000);
+    },
+
+    showSystemStatus(msg, type) {
+        const el = document.getElementById('sys-status');
+        el.innerText = msg;
+        if(type === 'success') el.className = "font-mono text-xs md:text-sm text-green-400";
+        else if(type === 'warning') el.className = "font-mono text-xs md:text-sm text-brand-warning";
+        else if(type === 'error') el.className = "font-mono text-xs md:text-sm text-brand-danger";
+    },
+
+    updateMetrics({ total, maxMag, energy, svi }) {
+        document.getElementById('metric-total').innerText = total;
+        document.getElementById('metric-max').innerText = maxMag;
+        document.getElementById('metric-energy').innerText = energy;
+        
+        const sviEl = document.getElementById('metric-svi');
+        sviEl.innerText = svi;
+        
+        // Color code SVI
+        const numSvi = parseFloat(svi);
+        if(numSvi > 75) sviEl.className = "text-brand-danger drop-shadow-lg";
+        else if (numSvi > 40) sviEl.className = "text-brand-warning";
+        else sviEl.className = "text-green-400";
+    },
+
+    updateChart(bins, currentFeed) {
+        const container = document.getElementById('energy-chart');
+        container.innerHTML = '';
+        
+        // Find max bin value for scaling
+        let maxVal = Math.max(...bins, 1); // Avoid div by zero
+
+        // Update Labels based on feed
+        const labelMap = { 'all_day': '-24H', 'all_week': '-7 DAYS', 'all_hour': '-1 HOUR' };
+        document.getElementById('chart-start').innerText = labelMap[currentFeed];
+
+        // Draw Bars
+        bins.forEach(val => {
+            const pct = (val / maxVal) * 100;
+            const bar = document.createElement('div');
+            
+            // Heatmap-like color scale for bars based on intensity relative to max
+            let bgColor = 'bg-brand-accent/40';
+            if (pct > 80) bgColor = 'bg-brand-danger/80';
+            else if (pct > 40) bgColor = 'bg-brand-warning/60';
+
+            bar.className = `flex-1 rounded-t-sm chart-bar ${bgColor}`;
+            bar.style.height = `${Math.max(2, pct)}%`; // Min height 2%
+            bar.title = `Est. Energy: ${UTILS.formatEnergy(val)}`;
+            container.appendChild(bar);
+        });
+    },
+
+    updateCountryRankings(countries) {
+        const container = document.getElementById('country-ranking');
+        container.innerHTML = '';
+        
+        if(countries.length === 0) {
+            container.innerHTML = '<div class="font-mono text-[10px] text-slate-600 text-center py-2">NO DATA AVALIABLE</div>';
+            return;
+        }
+
+        countries.forEach((country, idx) => {
+            const el = document.createElement('div');
+            // Added hover, transition, and pointer styles to indicate it is clickable
+            el.className = "flex justify-between items-center bg-black/20 p-1.5 md:p-2 rounded gap-2 cursor-pointer hover:bg-slate-800/50 transition-colors group";
+            
+            const maxColor = country.stats.maxMag >= 5.0 ? 'text-brand-danger' : 
+                            (country.stats.maxMag >= 3.0 ? 'text-brand-warning' : 'text-brand-accent');
+
+            el.innerHTML = `
+                <div class="flex items-center gap-2 flex-1 min-w-0">
+                    <span class="font-mono text-[9px] text-slate-500 w-3">${idx + 1}.</span>
+                    <span class="font-sans text-[10px] md:text-xs text-slate-200 truncate flex-1 group-hover:text-white transition-colors" title="${country.name}">${country.name}</span>
+                </div>
+                <div class="text-right flex-shrink-0">
+                    <span class="font-mono text-[9px] md:text-[10px] ${maxColor} font-bold mr-2">M ${country.stats.maxMag.toFixed(1)}</span>
+                    <span class="font-mono text-[8px] md:text-[9px] text-slate-500">${country.stats.count} ev</span>
+                </div>
+            `;
+            
+            // Click to lock onto the strongest quake in this region
+            el.onclick = () => {
+                if (country.stats.topQuake) {
+                    window.engine.focusOn(country.stats.topQuake.lat, country.stats.topQuake.lon);
+                    UIManager.setTargetLock(country.stats.topQuake);
+                }
+            };
+
+            container.appendChild(el);
+        });
+    },
+
+    updateList(events) {
+        const list = document.getElementById('event-list');
+        list.innerHTML = '';
+        events.forEach(ev => {
+            const el = document.createElement('div');
+            el.className = "p-2 md:p-3 border-b border-slate-800 hover:bg-slate-800/50 cursor-pointer transition-colors flex justify-between items-center group";
+            
+            const magColor = ev.mag >= 5.0 ? 'text-brand-danger' : (ev.mag >= 3.0 ? 'text-brand-warning' : 'text-slate-300');
+            
+            el.innerHTML = `
+                <div class="flex-1 min-w-0 mr-2">
+                    <div class="font-mono text-xs md:text-sm font-bold ${magColor}">M ${ev.mag.toFixed(1)}</div>
+                    <div class="font-sans text-[9px] md:text-[10px] text-slate-400 truncate group-hover:text-slate-200 transition-colors">${ev.place}</div>
+                </div>
+                <div class="text-right flex-shrink-0">
+                    <div class="font-mono text-[8px] md:text-[9px] text-slate-500">${new Date(ev.time).toLocaleTimeString()}</div>
+                    <div class="font-mono text-[8px] md:text-[9px] text-brand-accent">${ev.depth.toFixed(0)}km ↓</div>
+                </div>
+            `;
+            el.onclick = () => {
+                window.engine.focusOn(ev.lat, ev.lon);
+                this.setTargetLock(ev);
+            };
+            list.appendChild(el);
+        });
+    },
+
+    showTooltip(x, y, data) {
+        const tt = document.getElementById('tooltip');
+        tt.style.left = x + 'px';
+        tt.style.top = y + 'px';
+        tt.style.opacity = '1';
+        tt.style.transform = 'translate(-50%, -120%) scale(1)';
+
+        document.getElementById('tt-mag').innerText = `M ${data.mag.toFixed(1)}`;
+        document.getElementById('tt-mag').className = `font-mono font-bold text-base md:text-lg ${data.mag >= 5.0 ? 'text-brand-danger' : 'text-slate-100'}`;
+        document.getElementById('tt-depth').innerText = `${data.depth.toFixed(1)} km`;
+        document.getElementById('tt-place').innerText = data.place;
+        
+        const d = new Date(data.time);
+        document.getElementById('tt-time').innerText = d.toISOString().replace('T', ' ').substr(0, 19) + ' UTC';
+    },
+
+    hideTooltip() {
+        const tt = document.getElementById('tooltip');
+        tt.style.opacity = '0';
+        tt.style.transform = 'translate(-50%, -100%) scale(0.95)';
+    },
+
+    setTargetLock(data) {
+        document.getElementById('target-placeholder').classList.add('hidden');
+        document.getElementById('target-data').classList.remove('hidden');
+        document.getElementById('target-panel').classList.remove('opacity-50');
+
+        document.getElementById('td-mag').innerText = data.mag.toFixed(1);
+        document.getElementById('td-mag').className = `font-mono text-3xl md:text-4xl font-bold ${data.mag >= 5.0 ? 'text-brand-danger shadow-brand-danger drop-shadow-lg' : 'text-slate-100'}`;
+        
+        document.getElementById('td-depth').innerText = `${data.depth.toFixed(1)} km`;
+        document.getElementById('td-place').innerText = data.place;
+        
+        const latStr = Math.abs(data.lat).toFixed(3) + (data.lat >= 0 ? '°N' : '°S');
+        const lonStr = Math.abs(data.lon).toFixed(3) + (data.lon >= 0 ? '°E' : '°W');
+        document.getElementById('td-coords').innerText = `${latStr}, ${lonStr}`;
+        
+        // Convert to local time string of user browser
+        const d = new Date(data.time);
+        document.getElementById('td-time').innerText = d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', timeZoneName:'short'});
+        
+        document.getElementById('td-energy').innerText = UTILS.formatEnergy(UTILS.calculateEnergy(data.mag));
+    },
+
+    clearTargetLock() {
+        document.getElementById('target-placeholder').classList.remove('hidden');
+        document.getElementById('target-data').classList.add('hidden');
+        document.getElementById('target-panel').classList.add('opacity-50');
+    }
+};
+
+
+/**
+ * APPLICATION BOOTSTRAP
+ */
+window.onload = () => {
+    // Sequence init for dramatic effect
+    setTimeout(() => {
+        document.getElementById('loader-text').innerText = "ESTABLISHING UPLINK...";
+    }, 500);
+
+    UIManager.init();
+    window.engine = new GlobeEngine('canvas-container');
+    window.dataManager = new DataManager(window.engine);
+    
+    // Start Render Loop
+    window.engine.render();
+};
+
+</script>
+
+    <script>window.va=window.va||function(){(window.va.q=window.va.q||[]).push(arguments)};</script><script src="/_vercel/insights/script.js"></script>
+	<script>window.si=window.si||function(){(window.siq=window.siq||[]).push(arguments)};</script><script src="/_vercel/speed-insights/script.js"></script>	
+
+</body>
+</html>
