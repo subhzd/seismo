@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>SEISMO - Live Earthquake Globe</title>
     
+    <!-- Meta Tags for Social Sharing & Favicon -->
+    <link rel="icon" href="seismo.png" type="image/png">
+    <meta property="og:title" content="SEISMO - Live Earthquake Globe">
+    <meta property="og:description" content="Live 3D earthquake visualization and seismic telemetry.">
+    <meta property="og:image" content="https://seismo.aimaverick.me/seismo_og.png">
+    <meta property="og:url" content="https://seismo.aimaverick.me">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="SEISMO - Live Earthquake Globe">
+    <meta name="twitter:description" content="Live 3D earthquake visualization and seismic telemetry.">
+    <meta name="twitter:image" content="https://seismo.aimaverick.me/seismo_og.png">
+
     <!-- Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     
@@ -130,8 +142,7 @@
         <div class="flex flex-col md:flex-row justify-between items-start pointer-events-none gap-2">
             <div class="glass-panel p-3 md:p-4 pointer-events-auto w-full md:w-auto flex justify-between md:block items-center">
                 <h1 class="font-mono text-base md:text-xl font-bold tracking-wider text-slate-100 flex items-center gap-2 md:gap-3">
-                    <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0"></span>
-                    <img src="seismo.png" alt="Icon" class="w-5 h-5 md:w-6 md:h-6 object-contain" onerror="this.style.display='none'">
+                    <img src="seismo.png" alt="Icon" class="w-10 h-10 md:w-12 md:h-12 object-contain" onerror="this.style.display='none'">
                     SEISMO
                 </h1>
                 <p class="font-sans text-[9px] md:text-xs text-slate-400 md:mt-1 uppercase tracking-widest hidden md:block">Global Telemetry Array</p>
@@ -155,7 +166,8 @@
         </div>
 
         <!-- Middle Section: Left Dashboard & Right List -->
-        <div class="flex flex-col md:flex-row justify-between items-stretch flex-1 my-2 md:my-4 overflow-y-auto pointer-events-none gap-4 pb-2 md:pb-0">
+        <!-- mt-1 md:mt-2 moves the panel slightly up -->
+        <div class="flex flex-col md:flex-row justify-between items-stretch flex-1 mt-1 md:mt-2 mb-2 md:mb-4 overflow-y-auto pointer-events-none gap-4 pb-2 md:pb-0">
             
             <!-- Left: Executive Dashboard -->
             <div class="w-full md:w-80 flex flex-col gap-2 md:gap-3 pointer-events-auto flex-shrink-0 self-start md:sticky md:top-0 z-20">
@@ -230,11 +242,11 @@
             <!-- Mobile Spacer: Allows touching the 3D canvas on mobile devices between stacked panels -->
             <div class="md:hidden w-full min-h-[35vh] pointer-events-none flex-shrink-0"></div>
 
-            <!-- Globe View Controls (Zoom/Reset) -->
-            <div class="absolute right-4 md:right-6 bottom-24 md:bottom-28 z-[60] flex flex-col gap-2 pointer-events-auto">
-                <button onclick="window.engine.zoom(1)" class="glass-panel w-8 h-8 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-colors font-mono text-lg leading-none shadow-lg" title="Zoom In">+</button>
-                <button onclick="window.engine.zoom(-1)" class="glass-panel w-8 h-8 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-colors font-mono text-lg leading-none shadow-lg" title="Zoom Out">-</button>
-                <button onclick="window.engine.resetGlobe()" class="glass-panel w-8 h-8 flex items-center justify-center text-slate-300 hover:text-brand-accent hover:bg-slate-700 transition-colors font-mono text-lg shadow-lg pb-1" title="Reset Globe">↺</button>
+            <!-- Globe View Controls (Zoom/Reset) - Centered Horizontally Just Below Globe Center -->
+            <div class="absolute left-1/2 -translate-x-1/2 bottom-36 md:bottom-28 z-[60] flex flex-row gap-3 pointer-events-auto">
+                <button onclick="window.engine.zoom(1)" class="glass-panel w-10 h-10 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-colors font-mono text-xl leading-none shadow-lg" title="Zoom In">+</button>
+                <button onclick="window.engine.zoom(-1)" class="glass-panel w-10 h-10 flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-700 transition-colors font-mono text-xl leading-none shadow-lg" title="Zoom Out">-</button>
+                <button onclick="window.engine.resetGlobe()" class="glass-panel w-10 h-10 flex items-center justify-center text-slate-300 hover:text-brand-accent hover:bg-slate-700 transition-colors font-mono text-xl shadow-lg pb-1" title="Reset Globe">↺</button>
             </div>
 
             <!-- Right: Event Log & Ranking -->
@@ -599,6 +611,7 @@ class GlobeEngine {
                 group.children.forEach(mesh => {
                     if(mesh.userData.isSpike) mesh.visible = !active;
                     if(mesh.userData.isHeatmapGlow) mesh.visible = active;
+                    if(mesh.userData.isShallowGlow) mesh.visible = !active;
                 });
             }
         });
@@ -665,19 +678,22 @@ class GlobeEngine {
         glow.userData.baseSize = baseSize;
         glow.visible = this.isHeatmap;
         
-        // Even in normal mode, shallow quakes have a slight glow
-        if(depth < 30 && !this.isHeatmap) {
+        // Shallow glow added universally, visibility toggled based on mode
+        if(depth < 30) {
             const shallowGlow = new THREE.Sprite(spriteMat);
             shallowGlow.scale.set(baseSize*0.5, baseSize*0.5, 1);
+            shallowGlow.userData.isShallowGlow = true;
+            shallowGlow.userData.baseSize = baseSize * 0.5;
+            shallowGlow.visible = !this.isHeatmap;
             group.add(shallowGlow);
         }
         group.add(glow);
 
-        // 4. Animation Pulse for new events
+        // 4. Animation Pulse for new events (Using NormalBlending for visibility against day map)
         if(isNew) {
             const ringGeom = new THREE.RingGeometry(0.1, 0.2, 32);
             const ringMat = new THREE.MeshBasicMaterial({ 
-                color: color, side: THREE.DoubleSide, transparent: true, blending: THREE.AdditiveBlending, depthTest: false
+                color: color, side: THREE.DoubleSide, transparent: true, blending: THREE.NormalBlending, depthTest: false
             });
             const ring = new THREE.Mesh(ringGeom, ringMat);
             ring.rotation.x = Math.PI / 2; // Flat on surface
@@ -721,6 +737,34 @@ class GlobeEngine {
             .to({ x: targetPos.x, y: targetPos.y, z: targetPos.z }, 1500)
             .easing(TWEEN.Easing.Cubic.InOut)
             .start();
+    }
+
+    highlightMarker(id) {
+        const group = this.markerGroup.getObjectByName(id);
+        if (group) {
+            // Strong white ping animation (NormalBlending to ensure visibility)
+            const ringGeom = new THREE.RingGeometry(0.1, 0.3, 32);
+            const ringMat = new THREE.MeshBasicMaterial({ 
+                color: 0xffffff, side: THREE.DoubleSide, transparent: true, blending: THREE.NormalBlending, depthTest: false
+            });
+            const ring = new THREE.Mesh(ringGeom, ringMat);
+            ring.rotation.x = Math.PI / 2; // Flat on surface
+            group.add(ring);
+            
+            this.animations.push({
+                mesh: ring,
+                scale: 1,
+                opacity: 1,
+                maxScale: 6 // Large prominent ping
+            });
+
+            // Gentle physical bounce
+            new TWEEN.Tween(group.scale)
+                .to({ x: 1.5, y: 1.5, z: 1.5 }, 200)
+                .yoyo(true)
+                .repeat(5) // Up and down 3 times
+                .start();
+        }
     }
 
     zoom(direction) {
@@ -832,19 +876,25 @@ class GlobeEngine {
             }
         }
 
-        // Heatmap pulse effect
-        if(this.isHeatmap) {
-            const timePhase = Date.now() * 0.003;
-            this.markerGroup.children.forEach(group => {
-                group.children.forEach(mesh => {
-                    if(mesh.userData.isHeatmapGlow) {
-                        const pulse = 1 + Math.sin(timePhase + group.position.x) * 0.2;
-                        const bs = mesh.userData.baseSize;
-                        mesh.scale.set(bs * pulse, bs * pulse, 1);
-                    }
-                });
+        // Pulse effect across both Normal and Heatmap modes
+        const timePhase = Date.now() * 0.003;
+        this.markerGroup.children.forEach(group => {
+            group.children.forEach(mesh => {
+                if(mesh.userData.isHeatmapGlow && this.isHeatmap) {
+                    const pulse = 1 + Math.sin(timePhase + group.position.x) * 0.2;
+                    const bs = mesh.userData.baseSize;
+                    mesh.scale.set(bs * pulse, bs * pulse, 1);
+                } else if(mesh.userData.isShallowGlow && !this.isHeatmap) {
+                    const pulse = 1 + Math.sin(timePhase + group.position.x) * 0.2;
+                    const bs = mesh.userData.baseSize;
+                    mesh.scale.set(bs * pulse, bs * pulse, 1);
+                } else if(mesh.userData.isSpike && !this.isHeatmap) {
+                    // Give the spikes a slight breathing vertical effect to feel alive
+                    const pulse = 1 + Math.sin(timePhase + group.position.x * 5) * 0.05;
+                    mesh.scale.set(1, pulse, 1);
+                }
             });
-        }
+        });
 
         this.renderer.render(this.scene, this.camera);
         requestAnimationFrame((t) => this.render(t));
@@ -1203,6 +1253,7 @@ const UIManager = {
                 if (country.stats.topQuake) {
                     window.engine.focusOn(country.stats.topQuake.lat, country.stats.topQuake.lon);
                     UIManager.setTargetLock(country.stats.topQuake);
+                    window.engine.highlightMarker(country.stats.topQuake.id); // Trigger visual ping
                 }
             };
 
